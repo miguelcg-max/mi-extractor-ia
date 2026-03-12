@@ -4,13 +4,13 @@ import docx
 import anthropic
 import google.generativeai as genai
 import json
+import re
 
 # Configuración de la página
-st.set_page_config(page_title="Extractor de Exámenes con IA", page_icon="📄")
+st.set_page_config(page_title="Extractor de Exámenes con IA", page_icon="📄", layout="centered")
 st.title("Extractor de Exámenes a JSON")
 
 # --- Configuración de APIs ---
-# Intentamos cargar ambas claves desde los secretos.
 anthropic_key = st.secrets.get("ANTHROPIC_API_KEY")
 gemini_key = st.secrets.get("GEMINI_API_KEY")
 
@@ -20,162 +20,138 @@ if gemini_key:
     genai.configure(api_key=gemini_key)
 
 if not anthropic_key and not gemini_key:
-    st.error("⚠️ No se ha configurado ninguna API Key en los secretos de Streamlit.")
+    st.error("⚠️ No se ha configurado ninguna API Key en los secretos de Streamlit (Settings > Secrets).")
     st.stop()
 
 # --- Funciones de Extracción de Texto ---
 def extraer_texto_pdf(archivo):
     texto = ""
-    with pdfplumber.open(archivo) as pdf:
-        for pagina in pdf.pages:
-            texto_pagina = pagina.extract_text()
-            if texto_pagina:
-                texto += texto_pagina + "\n"
+    try:
+        with pdfplumber.open(archivo) as pdf:
+            for pagina in pdf.pages:
+                texto_pagina = pagina.extract_text()
+                if texto_pagina:
+                    texto += texto_pagina + "\n"
+    except Exception as e:
+        st.error(f"Error al leer PDF: {e}")
     return texto
 
 def extraer_texto_word(archivo):
-    doc = docx.Document(archivo)
-    return "\n".join([parrafo.text for parrafo in doc.paragraphs])
+    try:
+        doc = docx.Document(archivo)
+        return "\n".join([parrafo.text for parrafo in doc.paragraphs])
+    except Exception as e:
+        st.error(f"Error al leer Word: {e}")
+        return ""
 
 # --- Función de Procesamiento con IA ---
 def procesar_con_ia(texto, motor_ia):
     prompt_sistema = """
-    Eres un asistente experto en analizar exámenes. 
-    Tu objetivo es encontrar todas las preguntas (ya sean tipo test o casos prácticos) y sus respuestas.
+    Eres un asistente experto en analizar exámenes y casos prácticos.
+    Tu objetivo es extraer todas las preguntas y sus opciones de respuesta.
     
-    Devuelve ÚNICAMENTE un objeto JSON válido con la siguiente estructura exacta:
-    {
-      "examen": [
-        {
-          "pregunta": "Enunciado de la pregunta o caso práctico...",
-          "opciones": ["a) opción 1", "b) opción 2", "c) opción 3"] 
-        }
-      ]
-    }
-    Si la pregunta es de desarrollo o un caso práctico sin opciones, deja la lista vacía [].
-    Es CRÍTICO que devuelvas SOLO el JSON, empezando por { y terminando por }, sin comillas markdown ni texto extra.
+    INSTRUCCIONES TÉCNICAS:
+    1. Devuelve ÚNICAMENTE un objeto JSON.
+    2. Estructura: {"examen": [{"pregunta": "...", "opciones": ["a)...", "b)..."]}]}
+    3. Si es un caso práctico o pregunta de desarrollo sin opciones, deja "opciones": [].
+    4. No incluyas explicaciones, ni etiquetas markdown (como ```json).
     """
 
     # 1. Motor de Anthropic (Claude)
     if motor_ia == "Anthropic (Claude)":
         if not anthropic_key:
-            raise Exception("No has configurado la API Key de Anthropic en Streamlit.")
+            raise Exception("Falta ANTHROPIC_API_KEY en secretos.")
         
-        # Sistema de protección para Anthropic: probamos varios modelos en orden de modernidad
+        # Lista de modelos por orden de preferencia
         modelos_anthropic = [
-            "claude-3-5-sonnet-latest",
             "claude-3-5-sonnet-20241022",
             "claude-3-5-sonnet-20240620",
-            "claude-3-haiku-20240307"
+            "claude-3-haiku-20240307",
+            "claude-3-opus-20240229"
         ]
-        texto_resp = None
-        errores_anthropic = []
-
-        for nombre_modelo in modelos_anthropic:
+        
+        for modelo in modelos_anthropic:
             try:
                 respuesta = anthropic_client.messages.create(
-                    model=nombre_modelo,
+                    model=modelo,
                     max_tokens=4000,
                     system=prompt_sistema,
-                    messages=[{"role": "user", "content": f"Texto del examen:\n\n{texto}"}]
+                    messages=[{"role": "user", "content": f"Analiza este texto:\n\n{texto[:15000]}"}] # Límite de seguridad
                 )
-                texto_resp = respuesta.content[0].text
-                break # Si funciona, salimos del bucle
+                return respuesta.content[0].text
             except Exception as e:
-                errores_anthropic.append(f"{nombre_modelo}: {str(e)}")
-                continue
-        
-        if texto_resp is None:
-            raise Exception(f"No se pudo conectar. Detalles del error: {errores_anthropic}")
-            
-        return texto_resp
+                if "404" in str(e):
+                    continue # Probar el siguiente modelo
+                raise e
+        raise Exception("Ningún modelo de Anthropic disponible. Es probable que tu saldo recién añadido aún se esté procesando (tarda ~30 min).")
 
     # 2. Motor de Google (Gemini)
     elif motor_ia == "Google (Gemini)":
         if not gemini_key:
-            raise Exception("No has configurado la API Key de Gemini en Streamlit.")
+            raise Exception("Falta GEMINI_API_KEY en secretos.")
         
-        prompt_completo = prompt_sistema + "\n\nTexto del examen:\n" + texto
+        prompt_completo = f"{prompt_sistema}\n\nTexto del examen:\n{texto}"
         
-        # Sistema de protección para Gemini con nombres fijos y estables
-        modelos_a_probar = [
-            'gemini-1.5-flash',
-            'gemini-1.5-pro',
-            'gemini-2.0-flash',
-            'gemini-pro'
-        ]
-        texto_resp = None
-        errores_gemini = []
+        # Modelos estables de Google
+        modelos_gemini = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
         
-        for nombre_modelo in modelos_a_probar:
+        for m_name in modelos_gemini:
             try:
-                gemini_model = genai.GenerativeModel(nombre_modelo)
-                respuesta = gemini_model.generate_content(prompt_completo)
-                texto_resp = respuesta.text.strip()
-                break  # Si funciona, salimos del bucle
+                model = genai.GenerativeModel(m_name)
+                respuesta = model.generate_content(prompt_completo)
+                res_text = respuesta.text.strip()
+                # Limpieza de Markdown
+                res_text = re.sub(r'```json\s?|\s?```', '', res_text)
+                return res_text
             except Exception as e:
-                errores_gemini.append(f"{nombre_modelo}: {str(e)}")
                 continue
-                
-        if texto_resp is None:
-            raise Exception(f"Fallo en Gemini. Detalles: {errores_gemini}")
-        
-        # Limpieza de seguridad por si Gemini añade formato markdown (```json ... ```)
-        if texto_resp.startswith("```json"):
-            texto_resp = texto_resp[7:]
-        if texto_resp.startswith("```"):
-            texto_resp = texto_resp[3:]
-        if texto_resp.endswith("```"):
-            texto_resp = texto_resp[:-3]
-            
-        return texto_resp.strip()
+        raise Exception("No se pudo conectar con Gemini. Verifica que tu API Key sea de 'Google AI Studio'.")
 
-# --- Interfaz Visual de la Aplicación ---
-st.write("Sube tu examen y elige qué Inteligencia Artificial quieres usar para extraer el JSON.")
+# --- Interfaz Visual ---
+st.info("💡 Si acabas de recargar saldo en Anthropic, puede tardar unos minutos en activarse. Si falla, prueba con Google Gemini.")
 
-# Selector de Inteligencia Artificial
 opcion_ia = st.radio(
-    "Selecciona el motor de Inteligencia Artificial:",
+    "Elige el cerebro de la aplicación:",
     ("Anthropic (Claude)", "Google (Gemini)"),
     horizontal=True
 )
 
-archivo_subido = st.file_uploader("Sube tu archivo (.pdf o .docx)", type=['pdf', 'docx'])
+archivo_subido = st.file_uploader("Sube tu examen (.pdf o .docx)", type=['pdf', 'docx'])
 
 if archivo_subido is not None:
-    # 1. Extracción del texto
-    with st.spinner("Extrayendo texto del documento..."):
-        try:
-            if archivo_subido.name.endswith('.pdf'):
-                texto_extraido = extraer_texto_pdf(archivo_subido)
-            else:
-                texto_extraido = extraer_texto_word(archivo_subido)
-                
-            if not texto_extraido.strip():
-                st.error("No se pudo extraer texto. El documento podría ser una imagen escaneada.")
-                st.stop()
-        except Exception as e:
-            st.error(f"Error al leer el archivo: {e}")
-            st.stop()
-
-    # 2. Procesamiento con IA
-    with st.spinner(f"{opcion_ia.split(' ')[0]} está analizando el examen (puede tardar unos segundos)..."):
-        try:
-            json_resultado = procesar_con_ia(texto_extraido, opcion_ia)
+    with st.spinner("Leyendo archivo..."):
+        if archivo_subido.name.endswith('.pdf'):
+            texto_extraido = extraer_texto_pdf(archivo_subido)
+        else:
+            texto_extraido = extraer_texto_word(archivo_subido)
             
-            st.success("¡Análisis completado con éxito!")
-            
-            # Botón de descarga
-            st.download_button(
-                label="📥 Descargar JSON",
-                data=json_resultado,
-                file_name=f"examen_extraido_{opcion_ia.split(' ')[0].lower()}.json",
-                mime="application/json"
-            )
-            
-            # Vista previa del resultado
-            with st.expander("Ver vista previa del JSON"):
-                st.code(json_resultado, language='json')
-                
-        except Exception as e:
-            st.error(f"Error al procesar con la IA: {e}")
+    if texto_extraido.strip():
+        if st.button("🚀 Extraer Preguntas"):
+            with st.spinner(f"Analizando con {opcion_ia}..."):
+                try:
+                    resultado_raw = procesar_con_ia(texto_extraido, opcion_ia)
+                    
+                    # Intentar validar que es JSON
+                    try:
+                        data_json = json.loads(resultado_raw)
+                        st.success("¡Análisis completado!")
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.download_button(
+                                "📥 Descargar JSON",
+                                data=json.dumps(data_json, indent=4, ensure_ascii=False),
+                                file_name="examen.json",
+                                mime="application/json"
+                            )
+                        
+                        with st.expander("Ver preguntas extraídas"):
+                            st.json(data_json)
+                    except:
+                        st.error("La IA devolvió un formato extraño. Inténtalo de nuevo o cambia de IA.")
+                        st.text_area("Respuesta cruda:", resultado_raw)
+                        
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+    else:
+        st.warning("No se detectó texto en el archivo. ¿Es un PDF escaneado (imagen)?")
