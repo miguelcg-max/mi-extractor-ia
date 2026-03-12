@@ -10,7 +10,7 @@ st.set_page_config(page_title="Extractor de Exámenes con IA", page_icon="📄")
 st.title("Extractor de Exámenes a JSON")
 
 # --- Configuración de APIs ---
-# Intentamos cargar ambas claves. Usamos st.secrets.get() para que no dé error si falta alguna.
+# Intentamos cargar ambas claves.
 anthropic_key = st.secrets.get("ANTHROPIC_API_KEY")
 gemini_key = st.secrets.get("GEMINI_API_KEY")
 
@@ -54,7 +54,7 @@ def procesar_con_ia(texto, motor_ia):
       ]
     }
     Si la pregunta es de desarrollo o un caso práctico sin opciones, deja la lista vacía [].
-    Es CRÍTICO que devuelvas SOLO el JSON, empezando por { y terminando por }, sin comillas markdown (```json) ni texto extra.
+    Es CRÍTICO que devuelvas SOLO el JSON, empezando por { y terminando por }, sin comillas markdown ni texto extra.
     """
 
     if motor_ia == "Anthropic (Claude 3.5)":
@@ -71,16 +71,62 @@ def procesar_con_ia(texto, motor_ia):
     elif motor_ia == "Google (Gemini 1.5)":
         if not gemini_key:
             raise Exception("No has configurado la API Key de Gemini en Streamlit.")
-        # Gemini no usa el parámetro 'system' igual que Claude en esta versión, así que lo unimos
         prompt_completo = prompt_sistema + "\n\nTexto del examen:\n" + texto
         respuesta = gemini_model.generate_content(prompt_completo)
         texto_resp = respuesta.text.strip()
-        # Limpieza de seguridad por si Gemini añade formato markdown
-        if texto_resp.startswith("
-http://googleusercontent.com/immersive_entry_chip/0
-http://googleusercontent.com/immersive_entry_chip/1
-http://googleusercontent.com/immersive_entry_chip/2
+        
+        # Limpieza de seguridad con saltos de línea correctos
+        if texto_resp.startswith("```json"):
+            texto_resp = texto_resp[7:]
+        if texto_resp.startswith("```"):
+            texto_resp = texto_resp[3:]
+        if texto_resp.endswith("```"):
+            texto_resp = texto_resp[:-3]
+            
+        return texto_resp.strip()
 
-Guarda los cambios, recarga tu aplicación y verás que ahora tienes unos botones elegantes para cambiar entre Claude y Gemini a tu antojo. 
+# --- Interfaz de Usuario ---
+st.write("Sube tu examen y elige qué Inteligencia Artificial quieres usar para extraer el JSON.")
 
-¿Te gustaría que probemos subir el mismo archivo con las dos IAs a ver cuál te da el JSON más limpio, o te funciona ya todo perfectamente?
+# Selector de IA
+opcion_ia = st.radio(
+    "Selecciona el motor de Inteligencia Artificial:",
+    ("Anthropic (Claude 3.5)", "Google (Gemini 1.5)"),
+    horizontal=True
+)
+
+archivo_subido = st.file_uploader("Sube tu archivo (.pdf o .docx)", type=['pdf', 'docx'])
+
+if archivo_subido is not None:
+    with st.spinner("Extrayendo texto del documento..."):
+        try:
+            if archivo_subido.name.endswith('.pdf'):
+                texto_extraido = extraer_texto_pdf(archivo_subido)
+            else:
+                texto_extraido = extraer_texto_word(archivo_subido)
+                
+            if not texto_extraido.strip():
+                st.error("No se pudo extraer texto. El documento podría ser una imagen escaneada.")
+                st.stop()
+        except Exception as e:
+            st.error(f"Error al leer el archivo: {e}")
+            st.stop()
+
+    with st.spinner(f"{opcion_ia.split(' ')[0]} está analizando el examen (puede tardar unos segundos)..."):
+        try:
+            json_resultado = procesar_con_ia(texto_extraido, opcion_ia)
+            
+            st.success("¡Análisis completado con éxito!")
+            
+            st.download_button(
+                label="📥 Descargar JSON",
+                data=json_resultado,
+                file_name=f"examen_extraido_{opcion_ia.split(' ')[0].lower()}.json",
+                mime="application/json"
+            )
+            
+            with st.expander("Ver vista previa del JSON"):
+                st.code(json_resultado, language='json')
+                
+        except Exception as e:
+            st.error(f"Error al procesar con la IA: {e}")
