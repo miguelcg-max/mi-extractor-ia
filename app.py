@@ -1,17 +1,17 @@
 import streamlit as st
 import pdfplumber
 import docx
-from openai import OpenAI
+import anthropic
 import json
 
 # Configuración de la página
 st.set_page_config(page_title="Extractor de Exámenes con IA", page_icon="📄")
-st.title("Extractor de Exámenes a JSON (Con IA)")
+st.title("Extractor de Exámenes a JSON (Con Claude de Anthropic)")
 
 # Obtener la API Key de los secretos de Streamlit
 try:
-    api_key = st.secrets["OPENAI_API_KEY"]
-    client = OpenAI(api_key=api_key)
+    api_key = st.secrets["ANTHROPIC_API_KEY"]
+    client = anthropic.Anthropic(api_key=api_key)
 except:
     st.warning("⚠️ No se ha encontrado la API Key. Por favor, configúrala en los secretos de Streamlit.")
     st.stop()
@@ -30,35 +30,38 @@ def extraer_texto_word(archivo):
     return "\n".join([parrafo.text for parrafo in doc.paragraphs])
 
 def procesar_con_ia(texto):
-    prompt = """
+    prompt_sistema = """
     Eres un asistente experto en analizar exámenes. 
-    Te voy a pasar el texto extraído de un documento. Tu objetivo es encontrar todas las preguntas (ya sean tipo test o casos prácticos) y sus respuestas.
+    Tu objetivo es encontrar todas las preguntas (ya sean tipo test o casos prácticos) y sus respuestas.
     
-    Devuelve ÚNICAMENTE un objeto JSON válido con la siguiente estructura:
+    Devuelve ÚNICAMENTE un objeto JSON válido con la siguiente estructura exacta, sin texto antes ni después:
     {
       "examen": [
         {
           "pregunta": "Enunciado de la pregunta o caso práctico...",
-          "opciones": ["a) opción 1", "b) opción 2", "c) opción 3"] // Si es de desarrollo, deja esta lista vacía []
+          "opciones": ["a) opción 1", "b) opción 2", "c) opción 3"] 
         }
       ]
     }
-    No añadas ningún texto antes ni después del JSON.
+    Si la pregunta es de desarrollo o un caso práctico sin opciones, deja la lista vacía [].
+    Es CRÍTICO que tu respuesta empiece por '{' y termine por '}', no digas "Aquí tienes el JSON" ni nada similar.
     """
     
-    respuesta = client.chat.completions.create(
-        model="gpt-4o-mini", # Usamos el modelo mini porque es muy barato/rápido y perfecto para esto
+    # Llamada a la API de Anthropic
+    respuesta = client.messages.create(
+        model="claude-3-haiku-20240307",
+        max_tokens=4000,
+        system=prompt_sistema,
         messages=[
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": f"Aquí tienes el texto del examen:\n\n{texto}"}
-        ],
-        response_format={ "type": "json_object" } # Esto obliga a la API a devolver un JSON perfecto
+            {"role": "user", "content": f"Aquí tienes el texto extraído del documento:\n\n{texto}"}
+        ]
     )
     
-    return respuesta.choices[0].message.content
+    # Anthropic devuelve el contenido en una lista de bloques de texto
+    return respuesta.content[0].text
 
 # --- Interfaz de Usuario ---
-st.write("Sube tu examen en PDF o Word. La Inteligencia Artificial analizará el contenido (incluso si el formato es caótico) y generará un JSON estructurado.")
+st.write("Sube tu examen en PDF o Word. Claude analizará el contenido y generará un JSON estructurado.")
 
 archivo_subido = st.file_uploader("Sube tu archivo (.pdf o .docx)", type=['pdf', 'docx'])
 
@@ -71,14 +74,14 @@ if archivo_subido is not None:
                 texto_extraido = extraer_texto_word(archivo_subido)
                 
             if not texto_extraido.strip():
-                st.error("No se pudo extraer texto. Si es una imagen escaneada, requiere un OCR visual más avanzado.")
+                st.error("No se pudo extraer texto. Si es una imagen escaneada, requiere un OCR visual.")
                 st.stop()
                 
         except Exception as e:
             st.error(f"Error al leer el archivo: {e}")
             st.stop()
 
-    with st.spinner("La IA está estructurando el examen (esto puede tardar unos segundos)..."):
+    with st.spinner("Claude está estructurando el examen (esto puede tardar unos segundos)..."):
         try:
             json_resultado = procesar_con_ia(texto_extraido)
             
