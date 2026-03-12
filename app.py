@@ -57,17 +57,38 @@ def procesar_con_ia(texto, motor_ia):
     """
 
     # 1. Motor de Anthropic (Claude)
-    if motor_ia == "Anthropic (Claude 3.5)":
+    if motor_ia == "Anthropic (Claude)":
         if not anthropic_key:
             raise Exception("No has configurado la API Key de Anthropic en Streamlit.")
         
-        respuesta = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            max_tokens=4000,
-            system=prompt_sistema,
-            messages=[{"role": "user", "content": f"Texto del examen:\n\n{texto}"}]
-        )
-        return respuesta.content[0].text
+        # Sistema de protección para Anthropic: probamos varios modelos en orden de modernidad
+        modelos_anthropic = [
+            "claude-3-5-sonnet-latest",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-sonnet-20240620",
+            "claude-3-haiku-20240307"
+        ]
+        texto_resp = None
+        errores_anthropic = []
+
+        for nombre_modelo in modelos_anthropic:
+            try:
+                respuesta = anthropic_client.messages.create(
+                    model=nombre_modelo,
+                    max_tokens=4000,
+                    system=prompt_sistema,
+                    messages=[{"role": "user", "content": f"Texto del examen:\n\n{texto}"}]
+                )
+                texto_resp = respuesta.content[0].text
+                break # Si funciona, salimos del bucle
+            except Exception as e:
+                errores_anthropic.append(f"{nombre_modelo}: {str(e)}")
+                continue
+        
+        if texto_resp is None:
+            raise Exception(f"No se pudo conectar. Detalles del error: {errores_anthropic}")
+            
+        return texto_resp
 
     # 2. Motor de Google (Gemini)
     elif motor_ia == "Google (Gemini)":
@@ -76,10 +97,15 @@ def procesar_con_ia(texto, motor_ia):
         
         prompt_completo = prompt_sistema + "\n\nTexto del examen:\n" + texto
         
-        # Sistema de protección: Intentamos conectar con los modelos más recientes y estables de Google
-        modelos_a_probar = ['gemini-1.5-pro-latest', 'gemini-1.5-flash-latest', 'gemini-pro']
+        # Sistema de protección para Gemini con nombres fijos y estables
+        modelos_a_probar = [
+            'gemini-1.5-flash',
+            'gemini-1.5-pro',
+            'gemini-2.0-flash',
+            'gemini-pro'
+        ]
         texto_resp = None
-        ultimo_error = None
+        errores_gemini = []
         
         for nombre_modelo in modelos_a_probar:
             try:
@@ -88,11 +114,11 @@ def procesar_con_ia(texto, motor_ia):
                 texto_resp = respuesta.text.strip()
                 break  # Si funciona, salimos del bucle
             except Exception as e:
-                ultimo_error = e
+                errores_gemini.append(f"{nombre_modelo}: {str(e)}")
                 continue
                 
         if texto_resp is None:
-            raise Exception(f"No se pudo conectar con los modelos de Gemini. Error: {ultimo_error}")
+            raise Exception(f"Fallo en Gemini. Detalles: {errores_gemini}")
         
         # Limpieza de seguridad por si Gemini añade formato markdown (```json ... ```)
         if texto_resp.startswith("```json"):
@@ -110,7 +136,7 @@ st.write("Sube tu examen y elige qué Inteligencia Artificial quieres usar para 
 # Selector de Inteligencia Artificial
 opcion_ia = st.radio(
     "Selecciona el motor de Inteligencia Artificial:",
-    ("Anthropic (Claude 3.5)", "Google (Gemini)"),
+    ("Anthropic (Claude)", "Google (Gemini)"),
     horizontal=True
 )
 
