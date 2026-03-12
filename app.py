@@ -6,7 +6,7 @@ import json
 
 # Configuración de la página
 st.set_page_config(page_title="Extractor de Exámenes con IA", page_icon="📄")
-st.title("Extractor de Exámenes a JSON (Con Claude de Anthropic)")
+st.title("Extractor de Exámenes a JSON (Con Claude 3.5)")
 
 # Obtener la API Key de los secretos de Streamlit
 try:
@@ -47,7 +47,7 @@ def procesar_con_ia(texto):
     Es CRÍTICO que tu respuesta empiece por '{' y termine por '}', no digas "Aquí tienes el JSON" ni nada similar.
     """
     
-    # Llamada a la API de Anthropic
+    # Llamada a la API de Anthropic con el modelo Sonnet
     respuesta = client.messages.create(
         model="claude-3-5-sonnet-20241022",
         max_tokens=4000,
@@ -57,7 +57,6 @@ def procesar_con_ia(texto):
         ]
     )
     
-    # Anthropic devuelve el contenido en una lista de bloques de texto
     return respuesta.content[0].text
 
 # --- Interfaz de Usuario ---
@@ -99,5 +98,3 @@ if archivo_subido is not None:
                 
         except Exception as e:
             st.error(f"Error al procesar con la IA: {e}")
-
-
