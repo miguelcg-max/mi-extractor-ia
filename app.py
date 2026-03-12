@@ -49,7 +49,7 @@ def procesar_con_ia(texto):
     
     # Llamada a la API de Anthropic
     respuesta = client.messages.create(
-        model="claude-3-haiku-20240307",
+        model="claude-3-5-haiku-20241022",
         max_tokens=4000,
         system=prompt_sistema,
         messages=[
@@ -99,3 +99,4 @@ if archivo_subido is not None:
                 
         except Exception as e:
             st.error(f"Error al procesar con la IA: {e}")
+
