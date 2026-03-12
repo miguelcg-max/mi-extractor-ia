@@ -2,20 +2,29 @@ import streamlit as st
 import pdfplumber
 import docx
 import anthropic
+import google.generativeai as genai
 import json
 
 # Configuración de la página
 st.set_page_config(page_title="Extractor de Exámenes con IA", page_icon="📄")
-st.title("Extractor de Exámenes a JSON (Con Claude 3.5)")
+st.title("Extractor de Exámenes a JSON")
 
-# Obtener la API Key de los secretos de Streamlit
-try:
-    api_key = st.secrets["ANTHROPIC_API_KEY"]
-    client = anthropic.Anthropic(api_key=api_key)
-except:
-    st.warning("⚠️ No se ha encontrado la API Key. Por favor, configúrala en los secretos de Streamlit.")
+# --- Configuración de APIs ---
+# Intentamos cargar ambas claves. Usamos st.secrets.get() para que no dé error si falta alguna.
+anthropic_key = st.secrets.get("ANTHROPIC_API_KEY")
+gemini_key = st.secrets.get("GEMINI_API_KEY")
+
+if anthropic_key:
+    anthropic_client = anthropic.Anthropic(api_key=anthropic_key)
+if gemini_key:
+    genai.configure(api_key=gemini_key)
+    gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+
+if not anthropic_key and not gemini_key:
+    st.error("⚠️ No se ha configurado ninguna API Key en los secretos de Streamlit.")
     st.stop()
 
+# --- Funciones de Extracción ---
 def extraer_texto_pdf(archivo):
     texto = ""
     with pdfplumber.open(archivo) as pdf:
@@ -29,12 +38,13 @@ def extraer_texto_word(archivo):
     doc = docx.Document(archivo)
     return "\n".join([parrafo.text for parrafo in doc.paragraphs])
 
-def procesar_con_ia(texto):
+# --- Función de IA Unificada ---
+def procesar_con_ia(texto, motor_ia):
     prompt_sistema = """
     Eres un asistente experto en analizar exámenes. 
     Tu objetivo es encontrar todas las preguntas (ya sean tipo test o casos prácticos) y sus respuestas.
     
-    Devuelve ÚNICAMENTE un objeto JSON válido con la siguiente estructura exacta, sin texto antes ni después:
+    Devuelve ÚNICAMENTE un objeto JSON válido con la siguiente estructura exacta:
     {
       "examen": [
         {
@@ -44,57 +54,33 @@ def procesar_con_ia(texto):
       ]
     }
     Si la pregunta es de desarrollo o un caso práctico sin opciones, deja la lista vacía [].
-    Es CRÍTICO que tu respuesta empiece por '{' y termine por '}', no digas "Aquí tienes el JSON" ni nada similar.
+    Es CRÍTICO que devuelvas SOLO el JSON, empezando por { y terminando por }, sin comillas markdown (```json) ni texto extra.
     """
-    
-    # Llamada a la API de Anthropic con el modelo Sonnet
-    respuesta = client.messages.create(
-        model="claude-3-5-sonnet-20241022",
-        max_tokens=4000,
-        system=prompt_sistema,
-        messages=[
-            {"role": "user", "content": f"Aquí tienes el texto extraído del documento:\n\n{texto}"}
-        ]
-    )
-    
-    return respuesta.content[0].text
 
-# --- Interfaz de Usuario ---
-st.write("Sube tu examen en PDF o Word. Claude analizará el contenido y generará un JSON estructurado.")
+    if motor_ia == "Anthropic (Claude 3.5)":
+        if not anthropic_key:
+            raise Exception("No has configurado la API Key de Anthropic en Streamlit.")
+        respuesta = anthropic_client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=4000,
+            system=prompt_sistema,
+            messages=[{"role": "user", "content": f"Texto del examen:\n\n{texto}"}]
+        )
+        return respuesta.content[0].text
 
-archivo_subido = st.file_uploader("Sube tu archivo (.pdf o .docx)", type=['pdf', 'docx'])
+    elif motor_ia == "Google (Gemini 1.5)":
+        if not gemini_key:
+            raise Exception("No has configurado la API Key de Gemini en Streamlit.")
+        # Gemini no usa el parámetro 'system' igual que Claude en esta versión, así que lo unimos
+        prompt_completo = prompt_sistema + "\n\nTexto del examen:\n" + texto
+        respuesta = gemini_model.generate_content(prompt_completo)
+        texto_resp = respuesta.text.strip()
+        # Limpieza de seguridad por si Gemini añade formato markdown
+        if texto_resp.startswith("
+http://googleusercontent.com/immersive_entry_chip/0
+http://googleusercontent.com/immersive_entry_chip/1
+http://googleusercontent.com/immersive_entry_chip/2
 
-if archivo_subido is not None:
-    with st.spinner("Extrayendo texto del archivo..."):
-        try:
-            if archivo_subido.name.endswith('.pdf'):
-                texto_extraido = extraer_texto_pdf(archivo_subido)
-            else:
-                texto_extraido = extraer_texto_word(archivo_subido)
-                
-            if not texto_extraido.strip():
-                st.error("No se pudo extraer texto. Si es una imagen escaneada, requiere un OCR visual.")
-                st.stop()
-                
-        except Exception as e:
-            st.error(f"Error al leer el archivo: {e}")
-            st.stop()
+Guarda los cambios, recarga tu aplicación y verás que ahora tienes unos botones elegantes para cambiar entre Claude y Gemini a tu antojo. 
 
-    with st.spinner("Claude está estructurando el examen (esto puede tardar unos segundos)..."):
-        try:
-            json_resultado = procesar_con_ia(texto_extraido)
-            
-            st.success("¡Análisis completado!")
-            
-            st.download_button(
-                label="📥 Descargar JSON",
-                data=json_resultado,
-                file_name="examen_estructurado.json",
-                mime="application/json"
-            )
-            
-            with st.expander("Ver vista previa del JSON"):
-                st.code(json_resultado, language='json')
-                
-        except Exception as e:
-            st.error(f"Error al procesar con la IA: {e}")
+¿Te gustaría que probemos subir el mismo archivo con las dos IAs a ver cuál te da el JSON más limpio, o te funciona ya todo perfectamente?
